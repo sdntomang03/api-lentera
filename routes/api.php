@@ -25,6 +25,7 @@ Route::prefix('v1')->group(function (): void {
                 ->whereIn('type', ['passages', 'questions', 'reading-practice']);
 
             Route::middleware('teacher')->group(function (): void {
+                Route::put('/me/profile', [SettingController::class, 'updateOwnProfile']);
                 Route::post('/content/{type}', [ContentController::class, 'store'])
                     ->whereIn('type', ['passages', 'questions', 'reading-practice']);
                 Route::put('/content/{type}/{id}', [ContentController::class, 'update'])
@@ -32,6 +33,7 @@ Route::prefix('v1')->group(function (): void {
                 Route::delete('/content/{type}/{id}', [ContentController::class, 'destroy'])
                     ->whereIn('type', ['passages', 'questions', 'reading-practice']);
                 Route::get('/admin/students', [StudentController::class, 'index']);
+                Route::post('/admin/students/import', [StudentController::class, 'import']);
                 Route::post('/admin/students', [StudentController::class, 'store']);
                 Route::get('/admin/teachers', [StudentController::class, 'indexTeachers']);
                 Route::post('/admin/teachers', [StudentController::class, 'storeTeacher']);

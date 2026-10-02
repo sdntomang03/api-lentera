@@ -108,21 +108,29 @@ class RestApiTest extends TestCase
             'studentName' => 'Siswa Kelola',
             'username' => 'siswa_kelas',
             'password' => 'sandi-siswa-aman',
+            'gradeLevel' => 'Fase C (Kelas 5-6 SD)',
             'progress' => ['totalPoints' => 80],
         ])->assertCreated()
-            ->assertJsonPath('data.username', 'siswa_kelas');
+            ->assertJsonPath('data.username', 'siswa_kelas')
+            ->assertJsonPath('data.gradeLevel', 'Fase C (Kelas 5-6 SD)');
 
         $studentId = $created->json('data.id');
         $this->putJson('/api/v1/admin/students/'.$studentId, [
+            'studentName' => '  Nama Siswa Diperbarui  ',
             'username' => 'SISWA_BARU',
+            'gradeLevel' => 'Fase A (Kelas 1-2 SD)',
             'progress' => ['totalPoints' => 80],
         ])->assertOk()
-            ->assertJsonPath('data.username', 'siswa_baru');
+            ->assertJsonPath('data.studentName', 'Nama Siswa Diperbarui')
+            ->assertJsonPath('data.username', 'siswa_baru')
+            ->assertJsonPath('data.gradeLevel', 'Fase A (Kelas 1-2 SD)');
 
         $this->assertDatabaseHas('users', [
             'id' => $studentId,
+            'name' => 'Nama Siswa Diperbarui',
             'username' => 'siswa_baru',
             'teacher_id' => $teacher->id,
+            'grade_level' => 'Fase A (Kelas 1-2 SD)',
         ]);
 
         $this->postJson('/api/v1/admin/teachers', [
@@ -134,6 +142,52 @@ class RestApiTest extends TestCase
         $this->getJson('/api/v1/admin/teachers')
             ->assertOk()
             ->assertJsonCount(2, 'data');
+    }
+
+    public function test_teacher_can_import_students_with_row_level_validation(): void
+    {
+        $school = $this->createSchool();
+        $teacher = User::factory()->create(['role' => 'teacher', 'school_id' => $school->id]);
+        User::factory()->create(['username' => 'already_taken']);
+
+        $response = $this->actingAs($teacher)->postJson('/api/v1/admin/students/import', [
+            'students' => [
+                [
+                    'studentName' => 'Siswa Impor',
+                    'username' => 'siswa_impor',
+                    'password' => 'sandi-siswa-aman',
+                    'gradeLevel' => 'Kelas 4 (Fase B)',
+                ],
+                [
+                    'studentName' => 'Username Ganda',
+                    'username' => 'already_taken',
+                    'password' => 'sandi-siswa-aman',
+                ],
+                [
+                    'studentName' => 'Username Tidak Valid',
+                    'username' => 'tidak valid',
+                    'password' => 'sandi-siswa-aman',
+                ],
+            ],
+        ])->assertOk()
+            ->assertJsonPath('data.imported', 1)
+            ->assertJsonPath('data.failed', 2)
+            ->assertJsonPath('data.results.0.row', 2)
+            ->assertJsonPath('data.results.0.status', 'created')
+            ->assertJsonPath('data.results.1.row', 3)
+            ->assertJsonPath('data.results.1.status', 'error')
+            ->assertJsonPath('data.results.2.row', 4)
+            ->assertJsonPath('data.results.2.status', 'error');
+
+        $this->assertDatabaseHas('users', [
+            'username' => 'siswa_impor',
+            'role' => 'student',
+            'school_id' => $school->id,
+            'teacher_id' => $teacher->id,
+            'grade_level' => 'Kelas 4 (Fase B)',
+        ]);
+        $this->assertDatabaseMissing('users', ['username' => 'tidak valid']);
+        $this->assertStringNotContainsString('sandi-siswa-aman', $response->getContent());
     }
 
     public function test_student_progress_requires_points_and_keeps_database_points_in_sync(): void
@@ -330,6 +384,34 @@ class RestApiTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.schoolName', 'Sekolah Uji')
             ->assertJsonPath('data.teacherName', 'Guru Uji');
+    }
+
+    public function test_teacher_can_update_only_their_own_profile_name(): void
+    {
+        $school = $this->createSchool();
+        $teacher = User::factory()->create([
+            'role' => 'teacher',
+            'school_id' => $school->id,
+            'name' => 'Nama Lama',
+        ]);
+        $colleague = User::factory()->create([
+            'role' => 'teacher',
+            'school_id' => $school->id,
+            'name' => 'Nama Rekan',
+        ]);
+
+        $this->actingAs($teacher)->putJson('/api/v1/me/profile', [
+            'name' => '  Nama Baru  ',
+        ])->assertOk()
+            ->assertJsonPath('data.name', 'Nama Baru');
+
+        $this->assertDatabaseHas('users', ['id' => $teacher->id, 'name' => 'Nama Baru']);
+        $this->assertDatabaseHas('users', ['id' => $colleague->id, 'name' => 'Nama Rekan']);
+        $this->assertDatabaseHas('schools', ['id' => $school->id, 'name' => $school->name]);
+
+        $student = User::factory()->create(['school_id' => $school->id]);
+        $this->actingAs($student)->putJson('/api/v1/me/profile', ['name' => 'Bukan Guru'])
+            ->assertForbidden();
     }
 
     public function test_teachers_only_access_their_students_and_school_content(): void
