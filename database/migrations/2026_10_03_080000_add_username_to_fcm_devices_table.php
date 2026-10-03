@@ -10,29 +10,40 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('fcm_devices', function (Blueprint $table): void {
-            $table->string('username')->nullable()->after('user_id');
+            if (! Schema::hasColumn('fcm_devices', 'user_id')) {
+                $table->foreignId('user_id')->nullable()->constrained()->nullOnDelete();
+            }
+
+            if (! Schema::hasColumn('fcm_devices', 'username')) {
+                $table->string('username')->nullable();
+            }
         });
 
-        DB::table('fcm_devices')
-            ->select(['id', 'user_id'])
-            ->orderBy('id')
-            ->chunkById(100, function ($devices): void {
-                $usernames = DB::table('users')
-                    ->whereIn('id', $devices->pluck('user_id'))
-                    ->pluck('username', 'id');
+        if (Schema::hasColumn('fcm_devices', 'user_id')) {
+            DB::table('fcm_devices')
+                ->whereNotNull('user_id')
+                ->select(['id', 'user_id'])
+                ->orderBy('id')
+                ->chunkById(100, function ($devices): void {
+                    $usernames = DB::table('users')
+                        ->whereIn('id', $devices->pluck('user_id'))
+                        ->pluck('username', 'id');
 
-                foreach ($devices as $device) {
-                    DB::table('fcm_devices')
-                        ->where('id', $device->id)
-                        ->update(['username' => $usernames[$device->user_id] ?? null]);
-                }
-            });
+                    foreach ($devices as $device) {
+                        DB::table('fcm_devices')
+                            ->where('id', $device->id)
+                            ->update(['username' => $usernames[$device->user_id] ?? null]);
+                    }
+                });
+        }
     }
 
     public function down(): void
     {
-        Schema::table('fcm_devices', function (Blueprint $table): void {
-            $table->dropColumn('username');
-        });
+        if (Schema::hasColumn('fcm_devices', 'username')) {
+            Schema::table('fcm_devices', function (Blueprint $table): void {
+                $table->dropColumn('username');
+            });
+        }
     }
 };

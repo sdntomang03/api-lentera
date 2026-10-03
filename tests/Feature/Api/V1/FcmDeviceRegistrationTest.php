@@ -6,6 +6,7 @@ use App\Models\FcmDevice;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -81,6 +82,54 @@ class FcmDeviceRegistrationTest extends TestCase
             'device_id' => $deviceId,
             'username' => $user->username,
         ]);
+    }
+
+    public function test_username_migration_preserves_legacy_devices_without_user_id(): void
+    {
+        $originalConnection = DB::getDefaultConnection();
+        $connectionConfig = config('database.connections.sqlite');
+        $connectionConfig['database'] = ':memory:';
+        config(['database.connections.fcm_migration_test' => $connectionConfig]);
+        DB::purge('fcm_migration_test');
+        DB::setDefaultConnection('fcm_migration_test');
+
+        try {
+            Schema::create('users', function ($table): void {
+                $table->id();
+                $table->string('username')->unique();
+            });
+            Schema::create('fcm_devices', function ($table): void {
+                $table->id();
+                $table->uuid('device_id')->unique();
+                $table->text('token');
+                $table->string('platform', 16);
+                $table->timestamps();
+            });
+
+            $deviceId = (string) Str::uuid();
+            DB::table('fcm_devices')->insert([
+                'device_id' => $deviceId,
+                'token' => 'encrypted-legacy-token',
+                'platform' => 'android',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            $migration = require database_path('migrations/2026_10_03_080000_add_username_to_fcm_devices_table.php');
+            $migration->up();
+
+            $this->assertTrue(Schema::hasColumn('fcm_devices', 'user_id'));
+            $this->assertTrue(Schema::hasColumn('fcm_devices', 'username'));
+            $this->assertDatabaseHas('fcm_devices', [
+                'device_id' => $deviceId,
+                'token' => 'encrypted-legacy-token',
+                'username' => null,
+                'user_id' => null,
+            ]);
+        } finally {
+            DB::setDefaultConnection($originalConnection);
+            DB::purge('fcm_migration_test');
+        }
     }
 
     public function test_fcm_device_registration_validates_all_fields(): void
