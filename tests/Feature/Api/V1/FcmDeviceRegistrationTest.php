@@ -3,6 +3,7 @@
 namespace Tests\Feature\Api\V1;
 
 use App\Models\FcmDevice;
+use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -15,13 +16,16 @@ class FcmDeviceRegistrationTest extends TestCase
     public function test_tirta_can_register_and_refresh_a_device_fcm_token_without_an_account(): void
     {
         $deviceId = (string) Str::uuid();
+        $user = User::factory()->create();
 
-        $this->postJson('/api/v1/devices/fcm-token', [
+        $this->actingAs($user)->postJson('/api/v1/devices/fcm-token', [
             'deviceId' => $deviceId,
             'token' => 'fcm-token-initial',
             'platform' => 'android',
+            'username' => $user->username,
         ])->assertOk()
             ->assertJsonPath('deviceId', $deviceId)
+            ->assertJsonPath('username', $user->username)
             ->assertJsonMissingPath('token');
 
         $this->assertSame('fcm-token-initial', FcmDevice::where('device_id', $deviceId)->firstOrFail()->token);
@@ -30,14 +34,17 @@ class FcmDeviceRegistrationTest extends TestCase
             DB::table('fcm_devices')->where('device_id', $deviceId)->value('token'),
         );
         $this->assertDatabaseHas('fcm_devices', [
+            'user_id' => $user->id,
+            'username' => $user->username,
             'device_id' => $deviceId,
             'platform' => 'android',
         ]);
 
-        $this->postJson('/api/v1/devices/fcm-token', [
+        $this->actingAs($user)->postJson('/api/v1/devices/fcm-token', [
             'deviceId' => $deviceId,
             'token' => 'fcm-token-refreshed',
             'platform' => 'android',
+            'username' => $user->username,
         ])->assertOk()
             ->assertJsonMissingPath('token');
 
@@ -45,9 +52,40 @@ class FcmDeviceRegistrationTest extends TestCase
         $this->assertSame('fcm-token-refreshed', FcmDevice::where('device_id', $deviceId)->firstOrFail()->token);
     }
 
+    public function test_fcm_device_registration_rejects_a_username_that_does_not_match_the_authenticated_user(): void
+    {
+        $this->actingAs(User::factory()->create())->postJson('/api/v1/devices/fcm-token', [
+            'deviceId' => (string) Str::uuid(),
+            'token' => 'fcm-token',
+            'platform' => 'android',
+            'username' => 'someone-else',
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors(['username']);
+
+        $this->assertDatabaseCount('fcm_devices', 0);
+    }
+
+    public function test_legacy_fcm_registration_stores_the_authenticated_username(): void
+    {
+        $user = User::factory()->create();
+        $deviceId = (string) Str::uuid();
+
+        $this->actingAs($user)->postJson('/api/v1/devices/fcm-token', [
+            'deviceId' => $deviceId,
+            'token' => 'legacy-fcm-token',
+            'platform' => 'android',
+        ])->assertOk()
+            ->assertJsonPath('username', $user->username);
+
+        $this->assertDatabaseHas('fcm_devices', [
+            'device_id' => $deviceId,
+            'username' => $user->username,
+        ]);
+    }
+
     public function test_fcm_device_registration_validates_all_fields(): void
     {
-        $this->postJson('/api/v1/devices/fcm-token', [
+        $this->actingAs(User::factory()->create())->postJson('/api/v1/devices/fcm-token', [
             'deviceId' => 'not-a-uuid',
             'token' => '',
             'platform' => 'unknown',
@@ -55,6 +93,41 @@ class FcmDeviceRegistrationTest extends TestCase
             ->assertJsonValidationErrors(['deviceId', 'token', 'platform']);
 
         $this->assertDatabaseCount('fcm_devices', 0);
+    }
+
+    public function test_fcm_device_registration_requires_an_authenticated_user(): void
+    {
+        $this->postJson('/api/v1/devices/fcm-token', [
+            'deviceId' => (string) Str::uuid(),
+            'token' => 'fcm-token',
+            'platform' => 'android',
+        ])->assertUnauthorized();
+
+        $this->assertDatabaseCount('fcm_devices', 0);
+    }
+
+    public function test_user_can_only_unregister_their_own_device(): void
+    {
+        $owner = User::factory()->create();
+        $otherUser = User::factory()->create();
+        $device = FcmDevice::create([
+            'user_id' => $owner->id,
+            'device_id' => (string) Str::uuid(),
+            'token' => 'private-device-token',
+            'platform' => 'android',
+        ]);
+
+        $this->actingAs($otherUser)->deleteJson('/api/v1/devices/fcm-token', [
+            'deviceId' => $device->device_id,
+        ])->assertOk();
+
+        $this->assertDatabaseHas('fcm_devices', ['id' => $device->id]);
+
+        $this->actingAs($owner)->deleteJson('/api/v1/devices/fcm-token', [
+            'deviceId' => $device->device_id,
+        ])->assertOk();
+
+        $this->assertDatabaseMissing('fcm_devices', ['id' => $device->id]);
     }
 
     public function test_capacitor_apps_can_call_the_registration_endpoint_cross_origin(): void
