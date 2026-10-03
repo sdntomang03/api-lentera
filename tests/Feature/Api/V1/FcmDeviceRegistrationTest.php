@@ -14,6 +14,48 @@ class FcmDeviceRegistrationTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_only_platform_admin_can_list_fcm_devices_with_decrypted_tokens_and_usernames(): void
+    {
+        $user = User::factory()->create(['username' => 'tirta_user']);
+        FcmDevice::create([
+            'user_id' => $user->id,
+            'username' => $user->username,
+            'device_id' => (string) Str::uuid(),
+            'token' => 'usable-fcm-token',
+            'platform' => 'android',
+        ]);
+
+        $this->getJson('/api/v1/platform/fcm-devices')->assertUnauthorized();
+        $this->actingAs(User::factory()->create(['role' => 'teacher']))
+            ->getJson('/api/v1/platform/fcm-devices')
+            ->assertForbidden();
+
+        $this->actingAs(User::factory()->create(['role' => 'platform_admin']))
+            ->getJson('/api/v1/platform/fcm-devices')
+            ->assertOk()
+            ->assertJsonPath('data.0.username', 'tirta_user')
+            ->assertJsonPath('data.0.token', 'usable-fcm-token')
+            ->assertJsonPath('data.0.platform', 'android')
+            ->assertJsonPath('total', 1);
+    }
+
+    public function test_fcm_device_list_uses_account_username_for_legacy_device_records(): void
+    {
+        $user = User::factory()->create(['username' => 'legacy_user']);
+        FcmDevice::create([
+            'user_id' => $user->id,
+            'username' => null,
+            'device_id' => (string) Str::uuid(),
+            'token' => 'legacy-usable-token',
+            'platform' => 'android',
+        ]);
+
+        $this->actingAs(User::factory()->create(['role' => 'platform_admin']))
+            ->getJson('/api/v1/platform/fcm-devices')
+            ->assertOk()
+            ->assertJsonPath('data.0.username', 'legacy_user');
+    }
+
     public function test_tirta_can_register_and_refresh_a_device_fcm_token_without_an_account(): void
     {
         $deviceId = (string) Str::uuid();
